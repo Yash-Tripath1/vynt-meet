@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VYNT</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>VYNT</h1>
+      <p class="tagline">for Google Meet</p>
+    </header>
+
+    <section class="status" id="status" aria-live="polite">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">Checking Meet tab&hellip;</span>
+    </section>
+
+    <section class="master">
+      <button id="toggle" class="switch" aria-pressed="true">
+        <span class="switch-label">VYNT filters</span>
+        <span class="switch-state" id="toggleState">ON</span>
+      </button>
+    </section>
+
+    <section class="filters" id="filters" role="radiogroup" aria-label="Filter"></section>
+
+    <section class="controls" id="controls">
+      <label class="control">
+        <span class="control-label">PIXELATION <output id="pixelOut"></output></span>
+        <input type="range" id="pixel" min="1" max="10" step="1" />
+      </label>
+      <label class="control">
+        <span class="control-label">GRAIN <output id="grainOut"></output></span>
+        <input type="range" id="grain" min="0" max="100" step="1" />
+      </label>
+      <label class="control">
+        <span class="control-label">ZOOM <output id="zoomOut"></output></span>
+        <input type="range" id="zoom" min="1" max="2" step="0.05" />
+      </label>
+      <div class="toggles">
+        <label><input type="checkbox" id="dateImprint" /> <span>DATE STAMP</span></label>
+        <label><input type="checkbox" id="mirror" /> <span>MIRROR</span></label>
+      </div>
+    </section>
+
+    <footer>
+      <p id="footnote">
+        Pick a filter, then look at your own tile in Meet. Your video is filtered on this
+        device and never uploaded.
+      </p>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

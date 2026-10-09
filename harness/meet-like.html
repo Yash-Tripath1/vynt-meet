@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VYNT harness (Meet-like)</title>
+    <style>
+      body { margin: 0; background: #16140f; color: #efefe4; font: 14px/1.5 "Courier New", monospace; padding: 24px; }
+      h1 { font-size: 18px; letter-spacing: .18em; color: #b48cff; }
+      .row { display: flex; gap: 24px; flex-wrap: wrap; margin: 16px 0; }
+      figure { margin: 0; }
+      figcaption { font-size: 11px; letter-spacing: .12em; color: #a09a8c; margin-top: 6px; text-transform: uppercase; }
+      video { width: 420px; max-width: 90vw; background: #000; border: 1px solid #3a3630; border-radius: 4px; }
+      .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 14px 0; }
+      button { font: inherit; font-size: 11px; letter-spacing: .08em; background: #211f1b; color: #a09a8c; border: 1px solid #3a3630; border-radius: 3px; padding: 6px 10px; cursor: pointer; }
+      button.on { background: #b48cff; color: #1a1420; border-color: #b48cff; font-weight: 700; }
+      #status { color: #6ee7a8; }
+      p.hint { color: #a09a8c; font-size: 12px; max-width: 70ch; }
+    </style>
+  </head>
+  <body>
+    <h1>VYNT HARNESS</h1>
+    <p class="hint">
+      This page imitates Google Meet: it provides a synthetic camera and calls
+      <code>getUserMedia</code>, letting the MAIN-world hook do exactly what it does on Meet.
+      No webcam and no extension APIs are needed (it exercises the main-thread fallback renderer).
+      Serve this folder (e.g. <code>npx serve</code> or <code>python -m http.server</code>) and open it.
+    </p>
+
+    <div class="chips" id="chips"></div>
+    <div><span id="status">starting&hellip;</span></div>
+
+    <div class="row">
+      <figure><video id="filtered" autoplay muted playsinline></video><figcaption>What Meet would transmit</figcaption></figure>
+      <figure><video id="raw" autoplay muted playsinline></video><figcaption>Raw camera (synthetic)</figcaption></figure>
+    </div>
+
+    <!-- 1. Install a synthetic camera BEFORE the hook loads, so the hook wraps it. -->
+    <script>
+      (function installSyntheticCamera() {
+        const canvas = document.createElement('canvas')
+        canvas.width = 640
+        canvas.height = 360
+        const ctx = canvas.getContext('2d')
+        let t = 0
+        ;(function draw() {
+          t += 1
+          const hue = (t * 2) % 360
+          const g = ctx.createLinearGradient(0, 0, 640, 360)
+          g.addColorStop(0, `hsl(${hue} 60% 40%)`)
+          g.addColorStop(1, `hsl(${(hue + 120) % 360} 60% 30%)`)
+          ctx.fillStyle = g
+          ctx.fillRect(0, 0, 640, 360)
+          const x = (t * 4) % 700 - 50
+          ctx.fillStyle = 'rgba(255,255,255,0.85)'
+          ctx.beginPath()
+          ctx.arc(x, 180 + Math.sin(t / 20) * 90, 40, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = '#fff'
+          ctx.font = 'bold 28px "Courier New", monospace'
+          ctx.fillText('SYNTHETIC CAMERA', 24, 48)
+          requestAnimationFrame(draw)
+        })()
+
+        window.__syntheticStream = canvas.captureStream(30)
+
+        const syntheticGetUserMedia = (constraints) => {
+          if (!(constraints && constraints.video)) return Promise.reject(new DOMException('no video', 'NotFoundError'))
+          return Promise.resolve(window.__syntheticStream)
+        }
+
+        // Shadow the real API before the hook captures it.
+        navigator.mediaDevices.getUserMedia = syntheticGetUserMedia
+        window.__rawGetUserMedia = syntheticGetUserMedia
+      })()
+    </script>
+
+    <!-- 2. The built MAIN-world hook (classic script, works over http). -->
+    <script src="../dist/inject/hook.js"></script>
+
+    <!-- 3. Act as the bridge + as Meet: handshake, then request the camera. -->
+    <script>
+      (function runHarness() {
+        const status = document.getElementById('status')
+        const filtered = document.getElementById('filtered')
+        const raw = document.getElementById('raw')
+        raw.srcObject = window.__syntheticStream
+
+        const FILTERS = ['original', 'vyntage', 'digicam', 'nightflash', 'neoncity', 'fisheye', 'vhs', 'goldenfilm']
+        const chips = document.getElementById('chips')
+        const token = 'harness-token'
+        let current = 'vyntage'
+
+        function sendSettings(overrides) {
+          window.postMessage(
+            Object.assign({ __vynt: 'handshake', token, workerUrl: null, settings: Object.assign({
+              enabled: true, filterMode: current, pixelSize: 3, grain: 34, zoom: 1,
+              dateImprint: false, mirror: false, fpsCap: 30
+            }, overrides) }, ),
+            '*'
+          )
+        }
+
+        FILTERS.forEach((id) => {
+          const b = document.createElement('button')
+          b.textContent = id.toUpperCase()
+          b.onclick = () => {
+            current = id
+            ;[...chips.children].forEach((c) => c.classList.remove('on'))
+            b.classList.add('on')
+            sendSettings()
+          }
+          if (id === current) b.classList.add('on')
+          chips.appendChild(b)
+        })
+
+        window.addEventListener('message', (e) => {
+          if (e.source !== window || !e.data || e.data.__vynt !== 'telemetry') return
+          status.textContent = `hook active - filter: ${e.data.filter} - worker: ${e.data.worker} - fps: ${e.data.fps ?? 'n/a'}`
+        })
+
+        // Handshake + request the (patched) camera, as Meet would.
+        sendSettings()
+        navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then((stream) => {
+          filtered.srcObject = stream
+          status.textContent = 'camera acquired - filtered stream attached'
+        }).catch((err) => {
+          status.textContent = 'getUserMedia failed: ' + err
+        })
+
+        // Keep settings flowing as the bridge would.
+        setInterval(() => sendSettings(), 2000)
+      })()
+    </script>
+  </body>
+</html>
