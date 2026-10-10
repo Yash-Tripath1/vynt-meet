@@ -9,6 +9,14 @@
 // rendering on the main thread rather than sending a frozen frame for the rest of the
 // call. Because the canvas keeps a normal 2d context, that fallback is always reachable.
 
+// NOTE on imports: consumed two ways. As an ES module (unit tests) these imports are
+// required; in the built MAIN-world bundle build.js strips them, since the bundle
+// concatenates the core sources in dependency order and the identifiers are in scope.
+import { normalizeSettings } from '../core/settings.js'
+import { computeCoverCrop } from '../core/layout.js'
+import { createRenderer } from '../core/renderer.js'
+import { decideBoost } from '../core/autoQuality.js'
+
 export const MAX_OUTPUT_WIDTH = 1280
 
 export function resolveOutputSize(sourceWidth, sourceHeight) {
@@ -59,6 +67,7 @@ export function createCaptureStreamSource(options) {
 
   let framesSinceReport = 0
   let lastReportTime = 0
+  let autoBoost = 0 // extra pixelation steps added by the frame-rate guard
 
   function requestFrame() {
     if (outputTrack && typeof outputTrack.requestFrame === 'function') {
@@ -66,13 +75,39 @@ export function createCaptureStreamSource(options) {
     }
   }
 
+  // The settings the renderer actually uses: the user's, plus any auto-quality boost.
+  function eff() {
+    if (autoBoost <= 0) return settings
+    // 10 matches LIMITS.pixelSize.max in core/settings.js.
+    return Object.assign({}, settings, { pixelSize: Math.min(10, settings.pixelSize + autoBoost) })
+  }
+
+  function pushEffective() {
+    if (worker && workerReady) {
+      worker.postMessage({ type: 'configure', settings: eff(), width: outWidth, height: outHeight })
+    }
+  }
+
+  function maybeAutoBoost(fps) {
+    if (!settings.autoQuality) return
+    const next = decideBoost({ fps, currentBoost: autoBoost })
+    if (next !== autoBoost) {
+      autoBoost = next
+      pushEffective()
+    }
+  }
+
   function noteFrame(now) {
     framesSinceReport += 1
     if (now - lastReportTime >= 1000) {
+      const fps = Math.round((framesSinceReport * 1000) / (now - lastReportTime))
+      maybeAutoBoost(fps)
       if (onTelemetry) {
         onTelemetry({
-          fps: Math.round((framesSinceReport * 1000) / (now - lastReportTime)),
+          fps,
           mode: settings.filterMode,
+          auto: autoBoost > 0,
+          pixel: eff().pixelSize,
         })
       }
       framesSinceReport = 0
@@ -138,7 +173,7 @@ export function createCaptureStreamSource(options) {
       type: 'init',
       width: outWidth,
       height: outHeight,
-      settings,
+      settings: eff(),
     })
     return true
   }
@@ -185,7 +220,7 @@ export function createCaptureStreamSource(options) {
     pendingFrame = true
     try {
       if (context) {
-        render(context, canvas, outWidth, outHeight, bitmap, settings)
+        render(context, canvas, outWidth, outHeight, bitmap, eff())
         requestFrame()
         noteFrame(now)
       }
@@ -318,9 +353,7 @@ export function createCaptureStreamSource(options) {
 
     update(nextSettings) {
       settings = normalizeSettings(nextSettings)
-      if (worker && workerReady) {
-        worker.postMessage({ type: 'configure', settings, width: outWidth, height: outHeight })
-      }
+      pushEffective()
       if (video && video.videoWidth) recomputeCrop()
     },
 

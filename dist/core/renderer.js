@@ -85,7 +85,7 @@ export function createRenderer() {
     targetContext.drawImage(workingCanvas, 0, 0, targetWidth, targetHeight)
 
     if (settings.dateImprint) {
-      drawTimestamp(targetContext, targetWidth, targetHeight, new Date())
+      drawTimestamp(targetContext, targetWidth, targetHeight, new Date(), settings.stampCorner)
     }
   }
 }

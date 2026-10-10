@@ -1,4 +1,4 @@
-import { FILTERS, STORAGE_KEY, normalizeSettings } from '../core/settings.js'
+import { FILTERS, STAMP_CORNERS, STORAGE_KEY, normalizeSettings } from '../core/settings.js'
 
 const elements = {
   toggle: document.getElementById('toggle'),
@@ -13,6 +13,8 @@ const elements = {
   zoomOut: document.getElementById('zoomOut'),
   dateImprint: document.getElementById('dateImprint'),
   mirror: document.getElementById('mirror'),
+  stampCorner: document.getElementById('stampCorner'),
+  autoQuality: document.getElementById('autoQuality'),
   statusDot: document.getElementById('statusDot'),
   statusText: document.getElementById('statusText'),
   footnote: document.getElementById('footnote'),
@@ -58,6 +60,8 @@ function renderControls() {
   elements.zoomOut.textContent = settings.zoom.toFixed(2) + 'x'
   elements.dateImprint.checked = settings.dateImprint
   elements.mirror.checked = settings.mirror
+  elements.stampCorner.value = settings.stampCorner
+  elements.autoQuality.checked = settings.autoQuality
 
   const dimmed = !settings.enabled
   elements.filters.classList.toggle('is-dimmed', dimmed)
@@ -67,7 +71,18 @@ function renderControls() {
   elements.toggle.classList.toggle('is-off', dimmed)
 }
 
+function buildStampOptions() {
+  elements.stampCorner.textContent = ''
+  for (const corner of STAMP_CORNERS) {
+    const option = document.createElement('option')
+    option.value = corner
+    option.textContent = corner.replace('-', ' ').toUpperCase()
+    elements.stampCorner.appendChild(option)
+  }
+}
+
 function render() {
+  buildStampOptions()
   renderFilters()
   renderControls()
 }
@@ -106,6 +121,16 @@ elements.mirror.addEventListener('change', (event) => {
   save()
 })
 
+elements.stampCorner.addEventListener('change', (event) => {
+  settings = normalizeSettings({ ...settings, stampCorner: event.target.value })
+  save()
+})
+
+elements.autoQuality.addEventListener('change', (event) => {
+  settings = normalizeSettings({ ...settings, autoQuality: event.target.checked })
+  save()
+})
+
 function describeStatus(state) {
   if (!state) {
     elements.statusDot.className = 'dot is-idle'
@@ -132,8 +157,9 @@ function describeStatus(state) {
 
   const fps = Number.isFinite(telemetry.fps) ? ` ${telemetry.fps} fps` : ''
   const surface = telemetry.worker ? 'worker' : 'main thread'
+  const auto = telemetry.auto ? ` auto px${telemetry.pixel}` : ''
   elements.statusDot.className = 'dot is-live'
-  elements.statusText.textContent = `Live - ${telemetry.filter.toUpperCase()}${fps} - ${surface}`
+  elements.statusText.textContent = `Live - ${telemetry.filter.toUpperCase()}${fps} - ${surface}${auto}`
   elements.footnote.textContent = settings.enabled
     ? 'Changes apply immediately. Your video is filtered on this device and never uploaded.'
     : 'VYNT is off, so Meet is getting an unfiltered passthrough of your camera.'

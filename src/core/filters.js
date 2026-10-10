@@ -297,19 +297,40 @@ export function formatTimestamp(date) {
   return `${month}-${day}-${year}   ${hour}:${minute}:${second} ${meridiem}`
 }
 
-export function drawTimestamp(context, width, height, timestamp) {
+export function drawTimestamp(context, width, height, timestamp, corner) {
   const text = formatTimestamp(timestamp)
   const fontSize = Math.max(13, Math.round(width * 0.022))
   const padding = Math.max(14, Math.round(width * 0.03))
 
+  // Meet draws the participant's name over the BOTTOM-LEFT of every tile, which is exactly
+  // where upstream VYNT stamps the date. So the default here is bottom-right; the corner is
+  // configurable for anyone who wants the classic digicam look back.
+  const c = corner || 'bottom-right'
+  let x = padding
+  let y = height - padding
+  let align = 'left'
+  let baseline = 'bottom'
+  if (c === 'bottom-right') {
+    x = width - padding
+    align = 'right'
+  } else if (c === 'top-left') {
+    y = padding
+    baseline = 'top'
+  } else if (c === 'top-right') {
+    x = width - padding
+    y = padding
+    align = 'right'
+    baseline = 'top'
+  }
+
   context.save()
   context.font = `bold ${fontSize}px "Courier New", monospace`
-  context.textAlign = 'left'
-  context.textBaseline = 'bottom'
+  context.textAlign = align
+  context.textBaseline = baseline
   context.lineWidth = Math.max(2, Math.round(fontSize * 0.13))
   context.strokeStyle = 'rgba(10, 10, 9, 0.88)'
   context.fillStyle = 'rgba(239, 239, 228, 0.96)'
-  context.strokeText(text, padding, height - padding)
-  context.fillText(text, padding, height - padding)
+  context.strokeText(text, x, y)
+  context.fillText(text, x, y)
   context.restore()
 }

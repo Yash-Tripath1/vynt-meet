@@ -148,6 +148,20 @@ input[type="range"] {
   cursor: pointer;
 }
 
+select {
+  width: 100%;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 5px 6px;
+  cursor: pointer;
+}
+select:hover { border-color: var(--ink-dim); }
+
 .toggles {
   display: flex;
   gap: 14px;

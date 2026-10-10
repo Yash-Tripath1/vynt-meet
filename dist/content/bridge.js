@@ -23,6 +23,10 @@ const LIMITS = {
   zoom: { min: 1, max: 2, step: 0.05 },
 }
 
+// Meet overlays the participant name on the bottom-left of each tile, so the date stamp
+// defaults to the opposite corner. All four are offered for the classic look.
+const STAMP_CORNERS = ['bottom-right', 'bottom-left', 'top-left', 'top-right']
+
 const DEFAULT_SETTINGS = {
   enabled: true,
   filterMode: 'vyntage',
@@ -30,7 +34,9 @@ const DEFAULT_SETTINGS = {
   grain: 34,
   zoom: 1,
   dateImprint: false,
+  stampCorner: 'bottom-right',
   mirror: false, // transmission-correct default; see core/layout.js
+  autoQuality: true, // raise pixelation automatically if the frame rate dips
   fpsCap: 30,
 }
 
@@ -57,7 +63,9 @@ function normalizeSettings(input) {
     grain: Math.round(toNumber(raw.grain, DEFAULT_SETTINGS.grain, LIMITS.grain.min, LIMITS.grain.max)),
     zoom: toNumber(raw.zoom, DEFAULT_SETTINGS.zoom, LIMITS.zoom.min, LIMITS.zoom.max),
     dateImprint: typeof raw.dateImprint === 'boolean' ? raw.dateImprint : DEFAULT_SETTINGS.dateImprint,
+    stampCorner: STAMP_CORNERS.includes(raw.stampCorner) ? raw.stampCorner : DEFAULT_SETTINGS.stampCorner,
     mirror: typeof raw.mirror === 'boolean' ? raw.mirror : DEFAULT_SETTINGS.mirror,
+    autoQuality: typeof raw.autoQuality === 'boolean' ? raw.autoQuality : DEFAULT_SETTINGS.autoQuality,
     fpsCap: toNumber(raw.fpsCap, DEFAULT_SETTINGS.fpsCap, 1, 60),
   }
 }
@@ -134,6 +142,8 @@ function getFilterShortLabel(filterMode) {
         active: Boolean(data.active),
         filter: typeof data.filter === 'string' ? data.filter.slice(0, 16) : 'off',
         worker: Boolean(data.worker),
+        auto: Boolean(data.auto),
+        pixel: Number.isFinite(data.pixel) ? Math.max(1, Math.min(10, Math.round(data.pixel))) : null,
         fps,
         at: Date.now(),
       }

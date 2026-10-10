@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VYNT for Google Meet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Y2K camera filters for Google Meet. Eight live filters rendered on your device; your video is filtered locally and never uploaded.",
   "minimum_chrome_version": "115",
   "permissions": ["storage"],

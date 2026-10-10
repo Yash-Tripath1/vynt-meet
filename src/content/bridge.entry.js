@@ -61,6 +61,8 @@
         active: Boolean(data.active),
         filter: typeof data.filter === 'string' ? data.filter.slice(0, 16) : 'off',
         worker: Boolean(data.worker),
+        auto: Boolean(data.auto),
+        pixel: Number.isFinite(data.pixel) ? Math.max(1, Math.min(10, Math.round(data.pixel))) : null,
         fps,
         at: Date.now(),
       }

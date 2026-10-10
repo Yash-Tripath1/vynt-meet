@@ -53,6 +53,7 @@ const core = [
   'core/fisheyeLut.js',
   'core/layout.js',
   'core/settings.js',
+  'core/autoQuality.js',
   'core/renderer.js',
 ]
 

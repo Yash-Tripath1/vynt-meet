@@ -299,20 +299,41 @@ function formatTimestamp(date) {
   return `${month}-${day}-${year}   ${hour}:${minute}:${second} ${meridiem}`
 }
 
-function drawTimestamp(context, width, height, timestamp) {
+function drawTimestamp(context, width, height, timestamp, corner) {
   const text = formatTimestamp(timestamp)
   const fontSize = Math.max(13, Math.round(width * 0.022))
   const padding = Math.max(14, Math.round(width * 0.03))
 
+  // Meet draws the participant's name over the BOTTOM-LEFT of every tile, which is exactly
+  // where upstream VYNT stamps the date. So the default here is bottom-right; the corner is
+  // configurable for anyone who wants the classic digicam look back.
+  const c = corner || 'bottom-right'
+  let x = padding
+  let y = height - padding
+  let align = 'left'
+  let baseline = 'bottom'
+  if (c === 'bottom-right') {
+    x = width - padding
+    align = 'right'
+  } else if (c === 'top-left') {
+    y = padding
+    baseline = 'top'
+  } else if (c === 'top-right') {
+    x = width - padding
+    y = padding
+    align = 'right'
+    baseline = 'top'
+  }
+
   context.save()
   context.font = `bold ${fontSize}px "Courier New", monospace`
-  context.textAlign = 'left'
-  context.textBaseline = 'bottom'
+  context.textAlign = align
+  context.textBaseline = baseline
   context.lineWidth = Math.max(2, Math.round(fontSize * 0.13))
   context.strokeStyle = 'rgba(10, 10, 9, 0.88)'
   context.fillStyle = 'rgba(239, 239, 228, 0.96)'
-  context.strokeText(text, padding, height - padding)
-  context.fillText(text, padding, height - padding)
+  context.strokeText(text, x, y)
+  context.fillText(text, x, y)
   context.restore()
 }
 
@@ -453,6 +474,10 @@ const LIMITS = {
   zoom: { min: 1, max: 2, step: 0.05 },
 }
 
+// Meet overlays the participant name on the bottom-left of each tile, so the date stamp
+// defaults to the opposite corner. All four are offered for the classic look.
+const STAMP_CORNERS = ['bottom-right', 'bottom-left', 'top-left', 'top-right']
+
 const DEFAULT_SETTINGS = {
   enabled: true,
   filterMode: 'vyntage',
@@ -460,7 +485,9 @@ const DEFAULT_SETTINGS = {
   grain: 34,
   zoom: 1,
   dateImprint: false,
+  stampCorner: 'bottom-right',
   mirror: false, // transmission-correct default; see core/layout.js
+  autoQuality: true, // raise pixelation automatically if the frame rate dips
   fpsCap: 30,
 }
 
@@ -487,7 +514,9 @@ function normalizeSettings(input) {
     grain: Math.round(toNumber(raw.grain, DEFAULT_SETTINGS.grain, LIMITS.grain.min, LIMITS.grain.max)),
     zoom: toNumber(raw.zoom, DEFAULT_SETTINGS.zoom, LIMITS.zoom.min, LIMITS.zoom.max),
     dateImprint: typeof raw.dateImprint === 'boolean' ? raw.dateImprint : DEFAULT_SETTINGS.dateImprint,
+    stampCorner: STAMP_CORNERS.includes(raw.stampCorner) ? raw.stampCorner : DEFAULT_SETTINGS.stampCorner,
     mirror: typeof raw.mirror === 'boolean' ? raw.mirror : DEFAULT_SETTINGS.mirror,
+    autoQuality: typeof raw.autoQuality === 'boolean' ? raw.autoQuality : DEFAULT_SETTINGS.autoQuality,
     fpsCap: toNumber(raw.fpsCap, DEFAULT_SETTINGS.fpsCap, 1, 60),
   }
 }
@@ -498,6 +527,36 @@ function getFilterLabel(filterMode) {
 
 function getFilterShortLabel(filterMode) {
   return FILTERS.find((f) => f.id === filterMode)?.shortLabel ?? 'RAW'
+}
+
+
+// Lightweight, opt-out frame-rate guard.
+//
+// The filter loop is CPU-bound, and weak laptops can dip below a smooth 30 fps on the
+// heavier filters. Rather than let a call degrade, we nudge pixelation up (which shrinks
+// the working canvas and is the single biggest cost lever) when the measured frame rate
+// stays low. We only ever *increase* pixelation and never auto-reduce it: dropping back
+// down when the load is transient would cause visible flapping mid-call, and a slightly
+// softer image is always preferable to a stuttering one.
+//
+// Kept as a pure function so the decision rule is unit-testable in isolation.
+
+const AUTO_QUALITY = {
+  // Below this sustained fps we step pixelation up.
+  lowFps: 22,
+  // Hard cap on how many pixelation steps we may add on top of the user's choice.
+  maxBoost: 4,
+}
+
+/**
+ * @param {{fps:number, currentBoost:number}} args
+ * @returns {number} the next boost (0..maxBoost)
+ */
+function decideBoost({ fps, currentBoost }) {
+  const boost = Number.isFinite(currentBoost) ? currentBoost : 0
+  if (!Number.isFinite(fps)) return boost
+  if (fps < AUTO_QUALITY.lowFps && boost < AUTO_QUALITY.maxBoost) return boost + 1
+  return boost
 }
 
 
@@ -585,7 +644,7 @@ function createRenderer() {
     targetContext.drawImage(workingCanvas, 0, 0, targetWidth, targetHeight)
 
     if (settings.dateImprint) {
-      drawTimestamp(targetContext, targetWidth, targetHeight, new Date())
+      drawTimestamp(targetContext, targetWidth, targetHeight, new Date(), settings.stampCorner)
     }
   }
 }
@@ -601,6 +660,10 @@ function createRenderer() {
 // errors later (page CSP, a Chrome change, an unusual environment) we fall back to
 // rendering on the main thread rather than sending a frozen frame for the rest of the
 // call. Because the canvas keeps a normal 2d context, that fallback is always reachable.
+
+// NOTE on imports: consumed two ways. As an ES module (unit tests) these imports are
+// required; in the built MAIN-world bundle build.js strips them, since the bundle
+// concatenates the core sources in dependency order and the identifiers are in scope.
 
 const MAX_OUTPUT_WIDTH = 1280
 
@@ -652,6 +715,7 @@ function createCaptureStreamSource(options) {
 
   let framesSinceReport = 0
   let lastReportTime = 0
+  let autoBoost = 0 // extra pixelation steps added by the frame-rate guard
 
   function requestFrame() {
     if (outputTrack && typeof outputTrack.requestFrame === 'function') {
@@ -659,13 +723,39 @@ function createCaptureStreamSource(options) {
     }
   }
 
+  // The settings the renderer actually uses: the user's, plus any auto-quality boost.
+  function eff() {
+    if (autoBoost <= 0) return settings
+    // 10 matches LIMITS.pixelSize.max in core/settings.js.
+    return Object.assign({}, settings, { pixelSize: Math.min(10, settings.pixelSize + autoBoost) })
+  }
+
+  function pushEffective() {
+    if (worker && workerReady) {
+      worker.postMessage({ type: 'configure', settings: eff(), width: outWidth, height: outHeight })
+    }
+  }
+
+  function maybeAutoBoost(fps) {
+    if (!settings.autoQuality) return
+    const next = decideBoost({ fps, currentBoost: autoBoost })
+    if (next !== autoBoost) {
+      autoBoost = next
+      pushEffective()
+    }
+  }
+
   function noteFrame(now) {
     framesSinceReport += 1
     if (now - lastReportTime >= 1000) {
+      const fps = Math.round((framesSinceReport * 1000) / (now - lastReportTime))
+      maybeAutoBoost(fps)
       if (onTelemetry) {
         onTelemetry({
-          fps: Math.round((framesSinceReport * 1000) / (now - lastReportTime)),
+          fps,
           mode: settings.filterMode,
+          auto: autoBoost > 0,
+          pixel: eff().pixelSize,
         })
       }
       framesSinceReport = 0
@@ -731,7 +821,7 @@ function createCaptureStreamSource(options) {
       type: 'init',
       width: outWidth,
       height: outHeight,
-      settings,
+      settings: eff(),
     })
     return true
   }
@@ -778,7 +868,7 @@ function createCaptureStreamSource(options) {
     pendingFrame = true
     try {
       if (context) {
-        render(context, canvas, outWidth, outHeight, bitmap, settings)
+        render(context, canvas, outWidth, outHeight, bitmap, eff())
         requestFrame()
         noteFrame(now)
       }
@@ -911,9 +1001,7 @@ function createCaptureStreamSource(options) {
 
     update(nextSettings) {
       settings = normalizeSettings(nextSettings)
-      if (worker && workerReady) {
-        worker.postMessage({ type: 'configure', settings, width: outWidth, height: outHeight })
-      }
+      pushEffective()
       if (video && video.videoWidth) recomputeCrop()
     },
 
@@ -1047,7 +1135,8 @@ function createCaptureStreamSource(options) {
 
     const source = createCaptureStreamSource({
       workerUrl,
-      onTelemetry: (telemetry) => report({ fps: telemetry.fps, mode: telemetry.mode }),
+      onTelemetry: (telemetry) =>
+        report({ fps: telemetry.fps, mode: telemetry.mode, auto: Boolean(telemetry.auto), pixel: telemetry.pixel }),
     })
 
     const result = await source.start(videoTrack, effectiveSettings())

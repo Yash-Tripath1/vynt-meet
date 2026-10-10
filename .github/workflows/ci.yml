@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # No npm install is needed -- the build and tests are dependency-free.
+      - name: Build dist/
+        run: node build.js
+
+      # `tests/build.test.js` (run above) rebuilds dist/ and asserts the bundles are
+      # self-contained IIFEs with no leaked module statements -- the invariant that keeps
+      # the MAIN-world CSP fallbacks alive -- and `tests/filters.test.js` asserts the
+      # filter port is bit-identical to upstream.
