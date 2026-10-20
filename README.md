@@ -40,10 +40,30 @@ Dependency-free (no `npm install`), Node >= 16:
 
 ```bash
 node build.js      # regenerate dist/ from src/
-node --test tests/ # 35 unit tests, incl. bit-identical filter parity
+node --test tests/ # 42 unit tests, incl. bit-identical filter parity
 ```
 
 ---
+
+## What's new in 0.2.1 — background tabs keep streaming
+
+Switching away from Meet used to freeze your video for everyone else: the render loop was
+clocked by `requestVideoFrameCallback`/`requestAnimationFrame`, which browsers stop firing
+in hidden tabs, so the outgoing track simply stopped receiving frames. Fixed the way the
+production WebRTC tooling does it:
+
+- **The filter worker is now the clock.** Worker timers are exempt from hidden-tab
+  throttling, so the worker posts `tick` messages; a tick only draws when the regular
+  render chain has gone silent (≥2 frame periods), so foreground pacing is untouched.
+- **Stall-proof frame grabbing.** Frames normally come from the hidden `<video>` element
+  (which keeps advancing on Chromium); if an engine stalls it, `ImageCapture.grabFrame()`
+  pulls straight from the camera track — visibility-independent — and the pipeline
+  switches back the moment the element recovers.
+- The popup status shows `· bg` when the worker clock is carrying the load, so you can see
+  the fix working.
+
+Verified headlessly (unit tests pin the tick-gating and stall policy); see
+"Verification status" for how to confirm it on a real call.
 
 ## What's new in 0.2.0
 
@@ -80,7 +100,10 @@ Meet ──calls──► navigator.mediaDevices.getUserMedia ◄─┐
    When Meet asks for video, the real camera runs through the filter pipeline and Meet receives a
    `canvas.captureStream()` track instead. **Audio passes through untouched.**
 3. The pixel loop runs in a **Worker against an `OffscreenCanvas`** so it never blocks Meet's own
-   JS, falling back to the main thread if a worker can't start.
+   JS, falling back to the main thread if a worker can't start. The same worker is the
+   pipeline's **clock**: hidden tabs kill `requestVideoFrameCallback`/rAF, but not worker
+   timers, so worker ticks keep `requestFrame()` firing and your video keeps moving while you
+   are on another tab.
 
 ### Trust model, stated plainly
 
@@ -111,17 +134,21 @@ catches the rest.
 
 ## Verification status — read this
 
-**Verified headless (35 tests):** bit-identical filter parity incl. the fisheye LUT; timestamp
+**Verified headless (42 tests):** bit-identical filter parity incl. the fisheye LUT; timestamp
 corner geometry for all four corners; renderer fast path = one blit, no working canvas; hostile
-settings coerce to safe defaults; bundles are self-contained IIFEs; auto-quality decision rule.
+settings coerce to safe defaults; bundles are self-contained IIFEs; auto-quality decision rule;
+background-tab pump gating and element-stall policy.
 
 **Verified on real hardware by the maintainer:** the MAIN-world hook installs on live Meet
 (`navigator.mediaDevices.getUserMedia.__vyntPatched === true`), and a call carries the filter.
 
-**Not verifiable headless:** Meet's exact CSP interplay on every Chrome channel, and long-call /
-background-tab behaviour across hardware. If a future Chrome blocks the MAIN-world file, the
-self-contained IIFE keeps the nonce-relay / `executeScript` fallbacks available (~half-day change,
-not a redesign).
+**Needs a two-party check:** the background-tab fix — switch away from Meet mid-call and confirm
+on a second account (or a friend) that your tile keeps moving. The popup shows `· bg` when the
+worker clock is carrying the load.
+
+**Not verifiable headless:** Meet's exact CSP interplay on every Chrome channel, and long-call
+behaviour across hardware. If a future Chrome blocks the MAIN-world file, the self-contained IIFE
+keeps the nonce-relay / `executeScript` fallbacks available (~half-day change, not a redesign).
 
 ---
 

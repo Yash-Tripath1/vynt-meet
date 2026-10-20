@@ -660,6 +660,15 @@ function createRenderer() {
 // errors later (page CSP, a Chrome change, an unusual environment) we fall back to
 // rendering on the main thread rather than sending a frozen frame for the rest of the
 // call. Because the canvas keeps a normal 2d context, that fallback is always reachable.
+//
+// Background tabs: requestVideoFrameCallback and requestAnimationFrame stop firing when
+// the tab is hidden, which used to freeze the outgoing track the moment the user switched
+// away. The worker doubles as the pipeline's clock (its timers are not throttled in
+// hidden pages) and posts 'tick' messages; a tick only draws when the render chain has
+// gone silent, so foreground pacing is untouched. Frames are normally grabbed from the
+// hidden <video> element (which keeps advancing on Chromium); if an engine stalls it,
+// ImageCapture.grabFrame() pulls straight from the camera track instead. Policy lives in
+// core/pumpPolicy.js and is unit-tested.
 
 // NOTE on imports: consumed two ways. As an ES module (unit tests) these imports are
 // required; in the built MAIN-world bundle build.js strips them, since the bundle
@@ -717,6 +726,11 @@ function createCaptureStreamSource(options) {
   let lastReportTime = 0
   let autoBoost = 0 // extra pixelation steps added by the frame-rate guard
 
+  let lastPumpVia = 'rvfc' // clock behind the last draw: rvfc | raf | tick
+  let grabMode = 'element' // or 'track' while the hidden <video> element looks stuck
+  const grabProbe = { lastTime: null, since: 0 }
+  let imageCapture = null
+
   function requestFrame() {
     if (outputTrack && typeof outputTrack.requestFrame === 'function') {
       outputTrack.requestFrame()
@@ -734,6 +748,14 @@ function createCaptureStreamSource(options) {
     if (worker && workerReady) {
       worker.postMessage({ type: 'configure', settings: eff(), width: outWidth, height: outHeight })
     }
+  }
+
+  // Half a frame period: fine enough to notice a stalled chain quickly, coarse enough to
+  // stay cheap. Worker timers keep firing in hidden tabs -- this is the clock that
+  // survives a tab switch. See core/pumpPolicy.js for the gating rule.
+  function syncTicks() {
+    if (!worker) return
+    worker.postMessage({ type: 'ticks', ms: Math.max(16, 1000 / settings.fpsCap / 2) })
   }
 
   function maybeAutoBoost(fps) {
@@ -756,6 +778,8 @@ function createCaptureStreamSource(options) {
           mode: settings.filterMode,
           auto: autoBoost > 0,
           pixel: eff().pixelSize,
+          via: lastPumpVia,
+          grab: grabMode,
         })
       }
       framesSinceReport = 0
@@ -800,6 +824,19 @@ function createCaptureStreamSource(options) {
         return
       }
 
+      if (message.type === 'tick') {
+        // The worker clock. Only pump when the rVFC/rAF chain has gone silent (hidden
+        // tab, throttled page); while the page renders, ticks are cheap no-ops.
+        if (!running) return
+        const now = performance.now()
+        const interval = 1000 / settings.fpsCap
+        if (shouldPumpFromTick({ now, lastDrawTime: lastFrameTime, interval })) {
+          lastPumpVia = 'tick'
+          void drawOnce(now)
+        }
+        return
+      }
+
       if (message.type === 'rendered') {
         pendingFrame = false
         if (!running || !context) return
@@ -823,6 +860,7 @@ function createCaptureStreamSource(options) {
       height: outHeight,
       settings: eff(),
     })
+    syncTicks()
     return true
   }
 
@@ -836,41 +874,104 @@ function createCaptureStreamSource(options) {
     )
   }
 
-  async function drawOnce(now) {
-    if (pendingFrame || !running || !video || video.readyState < 2) return
-    if (!video.videoWidth || !video.videoHeight) return
+  // ---- frame grabbing ------------------------------------------------------
+  // Normal path: crop the <video> element's current frame into an ImageBitmap. Background
+  // insurance: if an engine stops advancing a hidden element, ImageCapture.grabFrame()
+  // takes the frame straight from the camera track, which is visibility-independent.
 
-    let bitmap
+  function ensureImageCapture() {
+    if (imageCapture) return imageCapture
+    if (typeof ImageCapture !== 'function' || !sourceTrack) return null
     try {
-      bitmap = await createImageBitmap(video, crop.sx, crop.sy, crop.sw, crop.sh)
+      imageCapture = new ImageCapture(sourceTrack)
     } catch (error) {
-      // A frame can be dropped while the track reconfigures. The next callback retries.
-      return
+      imageCapture = null
+    }
+    return imageCapture
+  }
+
+  async function grabFromElement() {
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null
+    return createImageBitmap(video, crop.sx, crop.sy, crop.sw, crop.sh)
+  }
+
+  async function grabFromTrack() {
+    const capture = ensureImageCapture()
+    if (!capture) return null
+    const full = await capture.grabFrame()
+    try {
+      // The camera frame is uncropped; apply the same cover-crop math at its own size.
+      const rect = computeCoverCrop(full.width, full.height, outWidth, outHeight, settings.zoom)
+      return await createImageBitmap(full, rect.sx, rect.sy, rect.sw, rect.sh)
+    } finally {
+      full.close()
+    }
+  }
+
+  async function grabFrame() {
+    // Sample the element clock on every grab (cheap), even in track mode, so a recovered
+    // element is picked up again immediately.
+    const stalled = video ? noteElementTime(grabProbe, video.currentTime, performance.now()) : true
+    grabMode = nextGrabMode({ mode: grabMode, elementStalled: stalled })
+
+    if (grabMode === 'track') {
+      try {
+        const bitmap = await grabFromTrack()
+        if (bitmap) return bitmap
+      } catch (error) {
+        // Track grabs can fail mid-reconfigure; fall back to the element for this frame.
+      }
+      grabMode = 'element'
+    }
+    return grabFromElement()
+  }
+
+  async function drawOnce(now) {
+    if (!running || pendingFrame) return
+    const interval = 1000 / settings.fpsCap
+    if (lastFrameTime && now - lastFrameTime < interval) return
+
+    // Claim the in-flight slot synchronously, before the first await, so a worker tick
+    // and a rVFC callback landing in the same turn can never start two grabs.
+    pendingFrame = true
+
+    let bitmap = null
+    try {
+      bitmap = await grabFrame()
+    } catch (error) {
+      // A frame can be dropped while the track reconfigures. The next pump retries.
+      bitmap = null
     }
 
     if (!running) {
-      bitmap.close()
+      if (bitmap) bitmap.close()
+      pendingFrame = false
       return
     }
+    if (!bitmap) {
+      pendingFrame = false
+      return
+    }
+
+    lastFrameTime = now
+    noteFrame(now)
 
     if (worker && workerReady && !workerFailed) {
-      pendingFrame = true
       try {
         worker.postMessage({ type: 'frame', bitmap }, [bitmap])
+        // The worker now owns the slot; its 'rendered' reply clears pendingFrame.
+        return
       } catch (error) {
-        pendingFrame = false
         abandonWorker()
+        pendingFrame = false
+        return
       }
-      noteFrame(now)
-      return
     }
 
-    pendingFrame = true
     try {
       if (context) {
         render(context, canvas, outWidth, outHeight, bitmap, eff())
         requestFrame()
-        noteFrame(now)
       }
     } finally {
       bitmap.close()
@@ -891,14 +992,9 @@ function createCaptureStreamSource(options) {
     frameCallbackId = null
     if (!running) return
 
+    lastPumpVia = usingVideoFrameCallback ? 'rvfc' : 'raf'
     const timestamp = typeof now === 'number' ? now : performance.now()
-    const interval = 1000 / settings.fpsCap
-    if (timestamp - lastFrameTime < interval) {
-      scheduleNext()
-      return
-    }
-    lastFrameTime = timestamp
-
+    // Pacing lives in drawOnce so rVFC and worker ticks share one budget.
     void drawOnce(timestamp).then(scheduleNext, scheduleNext)
   }
 
@@ -994,6 +1090,10 @@ function createCaptureStreamSource(options) {
       running = true
       lastFrameTime = 0
       lastReportTime = performance.now()
+      lastPumpVia = 'rvfc'
+      grabMode = 'element'
+      grabProbe.lastTime = null
+      grabProbe.since = 0
       scheduleNext()
 
       return { track: outputTrack, stream: outputStream }
@@ -1002,6 +1102,7 @@ function createCaptureStreamSource(options) {
     update(nextSettings) {
       settings = normalizeSettings(nextSettings)
       pushEffective()
+      syncTicks() // fpsCap may have changed; re-rate the background clock
       if (video && video.videoWidth) recomputeCrop()
     },
 
@@ -1136,7 +1237,14 @@ function createCaptureStreamSource(options) {
     const source = createCaptureStreamSource({
       workerUrl,
       onTelemetry: (telemetry) =>
-        report({ fps: telemetry.fps, mode: telemetry.mode, auto: Boolean(telemetry.auto), pixel: telemetry.pixel }),
+        report({
+          fps: telemetry.fps,
+          mode: telemetry.mode,
+          auto: Boolean(telemetry.auto),
+          pixel: telemetry.pixel,
+          via: telemetry.via,
+          grab: telemetry.grab,
+        }),
     })
 
     const result = await source.start(videoTrack, effectiveSettings())

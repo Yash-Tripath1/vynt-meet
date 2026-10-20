@@ -134,7 +134,7 @@ elements.autoQuality.addEventListener('change', (event) => {
 function describeStatus(state) {
   if (!state) {
     elements.statusDot.className = 'dot is-idle'
-    elements.statusText.textContent = 'No Google Meet tab in focus'
+    elements.statusText.textContent = 'No Google Meet tab open'
     elements.footnote.textContent =
       'Open meet.google.com and join a call. VYNT replaces the camera feed Meet transmits, so your own tile shows the result.'
     return
@@ -159,33 +159,46 @@ function describeStatus(state) {
   const surface = telemetry.worker ? 'worker' : 'main thread'
   const auto = telemetry.auto ? ` auto px${telemetry.pixel}` : ''
   elements.statusDot.className = 'dot is-live'
-  elements.statusText.textContent = `Live - ${telemetry.filter.toUpperCase()}${fps} - ${surface}${auto}`
+  const clock = telemetry.via === 'tick' ? ' · bg' : '' // worker clock pumping a hidden tab
+  elements.statusText.textContent = `Live - ${telemetry.filter.toUpperCase()}${fps} - ${surface}${auto}${clock}`
   elements.footnote.textContent = settings.enabled
     ? 'Changes apply immediately. Your video is filtered on this device and never uploaded.'
     : 'VYNT is off, so Meet is getting an unfiltered passthrough of your camera.'
 }
 
 async function refreshStatus() {
-  let tabId = null
+  // Query every Meet tab, not just the focused one: the status stays readable while the
+  // call is in the background -- which is how you watch the background pump carry a
+  // hidden call (the status line shows "· bg" while the worker clock is driving it).
+  let tabs = []
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    tabId = tab ? tab.id : null
+    tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' })
   } catch (error) {
-    tabId = null
-  }
-
-  if (typeof tabId !== 'number') {
-    describeStatus(null)
-    return
+    tabs = []
   }
 
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: 'vynt-status' })
-    describeStatus(response || null)
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (active && tabs.some((tab) => tab.id === active.id)) {
+      tabs = [active, ...tabs.filter((tab) => tab.id !== active.id)]
+    }
   } catch (error) {
-    // No content script on this tab: it is not Meet.
-    describeStatus(null)
+    // Keep URL order.
   }
+
+  for (const tab of tabs) {
+    if (!tab || typeof tab.id !== 'number') continue
+    try {
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'vynt-status' })
+      if (response) {
+        describeStatus(response)
+        return
+      }
+    } catch (error) {
+      // No content script on this tab yet; try the next Meet tab.
+    }
+  }
+  describeStatus(null)
 }
 
 async function init() {

@@ -144,6 +144,8 @@ function getFilterShortLabel(filterMode) {
         worker: Boolean(data.worker),
         auto: Boolean(data.auto),
         pixel: Number.isFinite(data.pixel) ? Math.max(1, Math.min(10, Math.round(data.pixel))) : null,
+        via: data.via === 'tick' || data.via === 'raf' ? data.via : 'rvfc',
+        grab: data.grab === 'track' ? 'track' : 'element',
         fps,
         at: Date.now(),
       }

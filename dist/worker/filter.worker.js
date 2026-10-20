@@ -21,6 +21,23 @@ let context = null
 let settings = normalizeSettings(null)
 let outWidth = 1280
 let outHeight = 720
+let tickTimer = null
+
+// The worker doubles as the pipeline's clock. Its timers keep firing in hidden tabs
+// (page-level timer throttling does not apply inside workers), so these ticks are what
+// keeps frames flowing to Meet after the user switches away from the call. See
+// core/pumpPolicy.js -- the main thread only draws on a tick when its own render chain
+// (requestVideoFrameCallback / rAF) has gone silent.
+function syncTicks(ms) {
+  if (tickTimer) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
+  const period = Number.isFinite(ms) ? Math.max(16, Math.round(ms)) : 0
+  if (period > 0) {
+    tickTimer = setInterval(() => self.postMessage({ type: 'tick' }), period)
+  }
+}
 
 function ensureCanvas() {
   if (canvas && canvas.width === outWidth && canvas.height === outHeight) return true
@@ -53,6 +70,11 @@ self.onmessage = (event) => {
         outHeight = nextHeight
         ensureCanvas()
       }
+      break
+    }
+
+    case 'ticks': {
+      syncTicks(message.ms)
       break
     }
 

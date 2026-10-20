@@ -115,7 +115,14 @@
     const source = createCaptureStreamSource({
       workerUrl,
       onTelemetry: (telemetry) =>
-        report({ fps: telemetry.fps, mode: telemetry.mode, auto: Boolean(telemetry.auto), pixel: telemetry.pixel }),
+        report({
+          fps: telemetry.fps,
+          mode: telemetry.mode,
+          auto: Boolean(telemetry.auto),
+          pixel: telemetry.pixel,
+          via: telemetry.via,
+          grab: telemetry.grab,
+        }),
     })
 
     const result = await source.start(videoTrack, effectiveSettings())

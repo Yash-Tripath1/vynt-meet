@@ -1,6 +1,6 @@
 {
   "name": "vynt-meet",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Y2K camera filters for Google Meet as a Manifest V3 extension. Filter maths ported from Yash-Tripath1/Vynt (MIT).",
